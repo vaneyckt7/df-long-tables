@@ -176,7 +176,10 @@ end
 --   map row 0 (vert.k = y) gives every tile, deep or not, the same surface it has in a plain
 --   row of tables, and the arms of an L or T fit the part that is deep.
 --   Metal and glass: the shift is the height of the rows, so the slanted streaks carry on in a
---   line; tiles are counted down from the top of their column.
+--   line.  Every joined tile, deep or not, is counted down from map row 0, so the streaks are
+--   one pattern over the whole map and the arms of an L, T or plus fit the part that is deep.
+--   The rows do not fit a whole number of times in a tile: the pattern comes round after as
+--   many tiles as there are rows (SLANT_CYCLE), by then moved sideways by `shift` whole tiles.
 local INTERIOR = {[0]={3, 18, 80}, {3, 18, 80}, {2, 20, 19}, {2, 20, 19}}
 -- Wood: sprite row 16 is one long pale streak of grain.  Once per table it is grain; down a deep
 -- table it comes back every sixteen rows and reads as lines ruled across the top.  A tile of a
@@ -184,6 +187,7 @@ local INTERIOR = {[0]={3, 18, 80}, {3, 18, 80}, {2, 20, 19}, {2, 20, 19}}
 -- (vert.calm), or the streak would run along the arm of an L or T and stop dead at the deep part.
 local PALE_ROW, PLAIN_ROW = 16 - 3, 11 - 3
 local function counts_from_map_top(class) return class == CLASS_WOOD or class == CLASS_STONE end
+local SLANT_CYCLE, SLANT_SHIFT = 20 - 2 + 1, 19
 local LEG_ROW = 26
 local OUTLINE = 0        -- the shade of the line around the table
 
@@ -204,9 +208,9 @@ end
 --   {n=, s=    a like table north / south of this one
 --    high=, low=   the piece (SINGLE..RIGHT) the top rows and the leg rows are drawn as, where
 --                  that is not `piece` (see draw_tables)
---    k=        how many tiles down the tile is: from map row 0 (wood, stone) or from the top of
---              its column (metal, glass)}
--- and phase is then the phase of the tile k tiles further north.  With a table to the south the legs
+--    k=        how many tiles down from map row 0 the tile is, as far as the surface can tell:
+--              modulo K_WRAP (wood, stone) or SLANT_CYCLE (metal, glass)}
+-- and phase is then the phase of the tile that many tiles further north.  With a table to the south the legs
 -- make way for more table top; with one to the north the top's upper edge does.
 local function compose(class, piece, phase, vert)
     local c = template[class]
@@ -303,7 +307,7 @@ local function tile_handle(tint, piece, phase, vert)
     if piece == SINGLE and not vert then phase = 0 end
     local key = tint | piece << 32 | phase << 36
     if vert then
-        key = key | (1 | (vert.n and 2 or 0) | (vert.s and 4 or 0) | vert.high << 3 | vert.low << 5 | vert.k << 7 | (vert.calm and 1 or 0) << 11) << 44
+        key = key | (1 | (vert.n and 2 or 0) | (vert.s and 4 or 0) | vert.high << 3 | vert.low << 5 | vert.k << 7 | (vert.calm and 1 or 0) << 12) << 44
     end
     local handle = tile_handles[key]
     if not handle then
@@ -531,15 +535,22 @@ local function make_view(wx, wy, wz, dim_x, dim_y, main, lower)
                         for s = first, last, 1 << 20 do calm_of[s] = calm end
                     end
                 end
-                if north or south or calm or high ~= piece or low ~= piece then
-                    if counts_from_map_top(tint & 3) then
+                local phase
+                if counts_from_map_top(tint & 3) then
+                    if north or south or calm or high ~= piece or low ~= piece then
                         k = lv.y[i]
-                    else
-                        while k < MARGIN and mats[here - k - 1] == key do k = k + 1 end
+                        vert = {n=north, s=south, high=high, low=low, k=k % K_WRAP, calm=calm or nil}
                     end
-                    vert = {n=north, s=south, high=high, low=low, k=k % K_WRAP, calm=calm or nil}
+                    phase = phase_at(lv.x[i], lv.y[i] - k)
+                else
+                    local y = lv.y[i]
+                    if left or right or north or south then
+                        vert = {n=north, s=south, high=high, low=low, k=y % SLANT_CYCLE}
+                    end
+                    phase = vert and (phase_at(lv.x[i], 0) + SLANT_SHIFT * (y // SLANT_CYCLE)) % phases
+                        or phase_at(lv.x[i], y)
                 end
-                local ok, handle = pcall(tile_handle, tint, piece, phase_at(lv.x[i], lv.y[i] - k), vert)
+                local ok, handle = pcall(tile_handle, tint, piece, phase, vert)
                 if ok and handle then
                     local place = place_of[handle]
                     if not place then

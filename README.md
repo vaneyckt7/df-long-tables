@@ -103,8 +103,6 @@ python3 art/make_template.py --check   # the template matches the art
 ## Known limitations
 
 - Fortress mode with the graphical tiles only; no ASCII, no adventure mode.
-- On metal and glass, the slanted streaks carry on down a wide table but do not always line
-  up where a one-tile arm meets it (the centre of a plus, say).
 - If a tool cancels a removal job half way, the table can look joined for up to about twenty seconds more.
 - A mod that replaces the game's table sprite is not picked up: joined tables are drawn from
   the vanilla table, lone tables by the game.

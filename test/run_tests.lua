@@ -534,11 +534,46 @@ do
         t = I.compose(class, 2, 0, {n=false, s=true, high=2, low=2, k=0})
         check('class ' .. class .. ': no corner inside a block', at(t, 0, 25) ~= 0 and at(t, 31, 25) ~= 0)
     end
+    -- metal and glass: the surface of a tile is the same whatever the table's shape, and the rows
+    -- carry on from one tile to the one below it, also across the 19-tile cycle
+    for class = 2, 3 do
+        local h, len = 19, PH * 32
+        local function surf(x, y, v)      -- strip position of pixel 5 of surface row 0, via equality of tiles
+            return I.compose(class, 2, (I.phase_at(x, 0) + 19 * (y // 19)) % PH, v)
+        end
+        for _, y in ipairs{0, 1, 18, 19, 37, 38, 100} do
+            local k = y % 19
+            local arm = surf(40, y, {n=false, s=false, high=2, low=2, k=k})
+            local deep = surf(40, y, {n=true, s=true, high=2, low=2, k=k})
+            local ok = true
+            for py = 2, 20 do for px = 0, 31 do if at(arm, px, py) ~= at(deep, px, py) then ok = false end end end
+            check('class ' .. class .. ': arm and deep tile agree at row ' .. y, ok)
+            -- the tile below, shifted back by the slant, continues this one: its row 0 is what
+            -- this tile's row 32 would be
+            local below = surf(40, y + 1, {n=true, s=true, high=2, low=2, k=(y + 1) % 19})
+            local d = k * 32 + 32 - 2
+            local q, r = d // h, d % h
+            local phase = (I.phase_at(40, 0) + 19 * (y // 19)) % PH
+            local strip = I.template()[class].strip
+            local r0 = I.template()[class].r0
+            local same_row = true
+            for px = 0, 31 do
+                if at(below, px, 0) ~= strip[(2 + r - r0) * len + (phase * 32 + q * 19 + px) % len + 1] then same_row = false end
+            end
+            check('class ' .. class .. ': row ' .. y .. ' carries on into the tile below', same_row)
+        end
+    end
     -- which picture each tile of a shape gets
     local function vert(n, s, high, low, k) return {n=n, s=s, high=high, low=low, k=k} end
     local function is(name, x, y, mat, piece, v, ky)
         local tint = I.material_tint(mat[1], mat[2])
         eq(name, cell(x, y) ~= 7 and same(pixels(cell(x, y)), I.paint_tile(tint, piece, I.phase_at(x, y - ky), v)), true)
+    end
+    -- metal and glass: every joined tile is counted down from map row 0, 19 tiles to a cycle
+    local function isg(name, x, y, piece, n, s, high, low)
+        local tint = I.material_tint(GLASS[1], GLASS[2])
+        local want = I.paint_tile(tint, piece, (I.phase_at(x, 0) + 19 * (y // 19)) % PH, vert(n, s, high, low, y % 19))
+        eq(name, cell(x, y) ~= 7 and same(pixels(cell(x, y)), want), true)
     end
     add_table(110, 59, 10, GLASS); add_table(110, 60, 10, GLASS); add_table(110, 61, 10, GLASS)   -- a column
     add_table(113, 59, 10, GLASS); add_table(113, 60, 10, STONE)                                  -- glass over stone
@@ -552,19 +587,19 @@ do
     -- a column that starts above the view (the view's first row is 50)
     add_table(105, 48, 10, GLASS); add_table(105, 49, 10, GLASS); add_table(105, 50, 10, GLASS)
     I.draw_tables()
-    is('column: top', 110, 59, GLASS, 0, vert(false, true, 0, 0, 0), 0)
-    is('column: middle', 110, 60, GLASS, 0, vert(true, true, 0, 0, 1), 1)
-    is('column: bottom', 110, 61, GLASS, 0, vert(true, false, 0, 0, 2), 2)
+    isg('column: top', 110, 59, 0, false, true, 0, 0)
+    isg('column: middle', 110, 60, 0, true, true, 0, 0)
+    isg('column: bottom', 110, 61, 0, true, false, 0, 0)
     eq('glass over stone does not join', cell(113, 59) .. ':' .. cell(113, 60), '7:7')
     is('L: top of the upright', 116, 56, STONE, 0, vert(false, true, 0, 0, 56 % 16), 56)
     is('L: corner', 116, 58, STONE, 1, vert(true, false, 0, 1, 58 % 16), 58)
     is('L: foot is a plain right end', 117, 58, STONE, 3, nil, 0)
-    is('T: left arm has no leg at the stem', 119, 60, GLASS, 1, vert(false, false, 1, 0, 0), 0)
-    is('T: middle of the bar', 120, 60, GLASS, 2, vert(false, true, 2, 0, 0), 0)
-    is('T: stem', 120, 61, GLASS, 0, vert(true, false, 0, 0, 1), 1)
-    is('block: top left', 119, 56, GLASS, 1, vert(false, true, 1, 1, 0), 0)
-    is('block: bottom right', 120, 57, GLASS, 3, vert(true, false, 3, 3, 1), 1)
-    is('a column from above the view is counted from its top', 105, 50, GLASS, 0, vert(true, false, 0, 0, 2), 2)
+    isg('T: left arm has no leg at the stem', 119, 60, 1, false, false, 1, 0)
+    isg('T: middle of the bar', 120, 60, 2, false, true, 2, 0)
+    isg('T: stem', 120, 61, 0, true, false, 0, 0)
+    isg('block: top left', 119, 56, 1, false, true, 1, 1)
+    isg('block: bottom right', 120, 57, 3, true, false, 3, 3)
+    isg('a column from above the view fits the map pattern', 105, 50, 0, true, false, 0, 0)
     do  -- wood: the arms of a T lose the pale streak too; a plain row keeps it
         local WOOD = {420, 7}
         for x = 100, 104 do add_table(x, 64, 10, WOOD) end
