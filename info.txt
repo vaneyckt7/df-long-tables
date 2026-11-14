@@ -5,7 +5,7 @@
 [EARLIEST_COMPATIBLE_DISPLAYED_VERSION:1.0]
 [AUTHOR:vaneyckt7]
 [NAME:Long Tables]
-[DESCRIPTION:Tables of one material built side by side are drawn as one long table. Needs DFHack. A plain DFHack script, nothing is installed outside the mod folder.]
+[DESCRIPTION:Tables of one material built next to each other are drawn as one table, as long and as wide as you build it. Needs DFHack. A plain DFHack script, nothing is installed outside the mod folder.]
 [STEAM_TITLE:Long Tables (banquet tables, DFHack)]
 [STEAM_TAG:dfhack]
 [STEAM_TAG:qol]

@@ -1,5 +1,5 @@
--- Long Tables: built tables standing side by side (west to east) and made of the same material
--- are drawn as one long table, with one leg under every join.  Cosmetic: only the picture changes.
+-- Long Tables: built tables standing next to each other (west to east or north to south) and made
+-- of the same material are drawn as one table, with one leg under every join.  Cosmetic: only the picture changes.
 --@ module = true
 --
 -- All of it is this script: one overlay widget that, after the game has drawn the map, puts the
@@ -662,7 +662,7 @@ end
 
 LongTablesOverlay = defclass(LongTablesOverlay, overlay.OverlayWidget)
 LongTablesOverlay.ATTRS{
-    desc='Draws tables standing side by side, of one material, as one long table.',
+    desc='Draws tables standing next to each other, of one material, as one table.',
     default_enabled=true,
     viewscreens='dwarfmode',
     frame={w=0, h=0},
