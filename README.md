@@ -131,7 +131,8 @@ The repository is the mod folder, laid out like the other mods here:
 ## Known limitations
 
 - Fortress mode with the graphical tiles only; no ASCII, no adventure mode.
-- If a tool cancels a removal job half way, the table can look joined for up to about twenty seconds more.
+- If a tool cancels a removal job half way, the table can look joined for up to 600 drawn frames more
+  (twelve seconds at 50 frames a second).
 - A mod that replaces the game's table sprite is not picked up: joined tables are drawn from
   the vanilla table, lone tables by the game.
 - The script reads the game's map layers by the names DFHack gives them. A game update that

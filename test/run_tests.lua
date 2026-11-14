@@ -998,5 +998,28 @@ do  -- found by review of the remembering: each of these fails if one of its che
     eq('a lower layer that comes back is drawn in that frame', row(110, 111, 55, 1), 'LR')
 end
 
+do  -- wood: whether a bar loses its pale streak does not depend on where the camera is
+    fresh()
+    local WOOD = {420, 7}
+    for x = 100, 140 do add_table(x, 60, 10, WOOD) end
+    add_table(140, 61, 10, WOOD)        -- the stem, far to the east of the view
+    for x = 100, 140 do add_table(x, 64, 10, WOOD) end      -- a plain row
+    local function streak(x, y)
+        local px, col = pixels(cell(x, y)), I.tint_colours(I.material_tint(420, 7))
+        local longest, run = 0, 0
+        for i = 0, 31 do
+            run = px[16 * 32 + i + 1] == col[7] and run + 1 or 0
+            if run > longest then longest = run end
+        end
+        return longest
+    end
+    I.draw_tables()
+    local worst, best = 0, 0
+    for x = 101, 123 do worst = math.max(worst, streak(x, 60)); best = math.max(best, streak(x, 64)) end
+    check('wood L, stem far off the view: no pale streak along the bar', worst < 12, worst)
+    check('wood row beside it keeps the streak', best >= 12, best)
+    eq('the margin is one row', I.MARGIN, 1)
+end
+
 print(('%d checks, %d failed'):format(count, failures))
 os.exit(failures == 0 and 0 or 1)

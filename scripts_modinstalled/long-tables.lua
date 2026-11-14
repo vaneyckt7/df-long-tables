@@ -358,7 +358,7 @@ local function material_key(b)
 end
 
 -- Where a table is on the screen, as one number; depth 0 is the level in view.
-local MARGIN = 64      -- tables this far above and below the view are noted too
+local MARGIN = 1       -- tables one row above and below the view are noted too
 local function spot(depth, sx, sy)
     return depth << 40 | (sx + 1) << 20 | (sy + MARGIN)
 end
@@ -423,6 +423,33 @@ local function index_table(b, i, byz, unfinished, removing)
     end
     local n = level.n + 1
     level.n, level.xs[n], level.ys[n], level.keys[n] = n, b.centerx, b.centery, key
+end
+
+-- Wood: is the west-east run of like tables this one stands in part of a deep table, that is,
+-- does any tile of it have a like table to the north or south?  Asked of the index and not of
+-- the view, so the answer is the same wherever the camera is; kept per run until the next index.
+local function run_is_deep(level, x, y, key)
+    local pos = level.pos
+    if not pos then
+        pos = {}
+        local xs, ys, keys = level.xs, level.ys, level.keys
+        for i = 1, level.n do pos[xs[i] << 16 | ys[i]] = keys[i] end
+        level.pos, level.deep = pos, {}
+    end
+    local deep = level.deep
+    local here = x << 16 | y
+    local answer = deep[here]
+    if answer == nil then
+        local first, last = here, here
+        while pos[first - (1 << 16)] == key do first = first - (1 << 16) end
+        while pos[last + (1 << 16)] == key do last = last + (1 << 16) end
+        answer = false
+        for s = first, last, 1 << 16 do
+            if pos[s - 1] == key or pos[s + 1] == key then answer = true; break end
+        end
+        for s = first, last, 1 << 16 do deep[s] = answer end
+    end
+    return answer
 end
 
 local function make_index(v, count, next_id)
@@ -497,7 +524,6 @@ local function make_view(wx, wy, wz, dim_x, dim_y, main, lower)
         end
     end
     local join = draw_singles ~= 'only'
-    local calm_of = {}      -- wood: spot -> is a tile of this west-east run part of a deep table?
     local first_err
     for _, lv in ipairs(levels) do
         local depth = lv.depth
@@ -522,18 +548,7 @@ local function make_view(wx, wy, wz, dim_x, dim_y, main, lower)
                 local vert, k = nil, 0
                 local calm = false
                 if join and tint & 3 == CLASS_WOOD and not (north or south) then
-                    calm = calm_of[here]
-                    if calm == nil then
-                        -- look along the whole run once, and remember the answer for all of it
-                        local first, last = here, here
-                        while mats[first - (1 << 20)] == key do first = first - (1 << 20) end
-                        while mats[last + (1 << 20)] == key do last = last + (1 << 20) end
-                        calm = false
-                        for s = first, last, 1 << 20 do
-                            if mats[s - 1] == key or mats[s + 1] == key then calm = true; break end
-                        end
-                        for s = first, last, 1 << 20 do calm_of[s] = calm end
-                    end
+                    calm = run_is_deep(index[wz - depth], lv.x[i], lv.y[i], key)
                 end
                 local phase
                 if counts_from_map_top(tint & 3) then
@@ -695,7 +710,7 @@ end
 OVERLAY_WIDGETS = { map = LongTablesOverlay }
 
 -- For test/run_tests.lua only.
-internal = {compose=compose, paint_tile=paint_tile, tint_colours=tint_colours, material_tint=material_tint,
+internal = {MARGIN=MARGIN, compose=compose, paint_tile=paint_tile, tint_colours=tint_colours, material_tint=material_tint,
             draw_tables=draw_tables, phase_at=phase_at, load_template=load_template,
             phases=function() return phases end, template=function() return template end, CLEAR=CLEAR, SHADOW=SHADOW, BLEND=BLEND, FAINT=FAINT, HALF=HALF}
 
