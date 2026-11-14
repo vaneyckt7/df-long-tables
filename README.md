@@ -100,6 +100,34 @@ lua test/run_tests.lua                 # any Lua 5.3 or later; DFHack and the ga
 python3 art/make_template.py --check   # the template matches the art
 ```
 
+## Layout and releasing
+
+The repository is the mod folder, laid out like the other mods here:
+
+    info.txt                                                mod metadata (ID and NUMERIC_VERSION are what DFHack needs)
+    preview.png                                             Steam Workshop thumbnail
+    steam_description.txt                                   Steam Workshop description, pasted on the Workshop page by hand
+    scripts_modinstalled/long-tables.lua                    the overlay; active whenever the mod is installed
+    scripts_modinstalled/internal/long-tables/template.lua  the table art, generated from art/
+    art/  test/  docs/                                      sources, tests and README pictures; not uploaded
+
+`art/`, `test/`, `docs/` and `steam_description.txt` are left out of archives made with
+`git archive` (see `.gitattributes`), so an exported copy is exactly what gets uploaded.
+
+1. Run the checks: `lua test/run_tests.lua` and `python3 art/make_template.py --check`.
+2. In `info.txt`, raise `NUMERIC_VERSION` (keep it three digits: DFHack compares it as text and
+   uses the highest copy it finds) and `DISPLAYED_VERSION`, and write a new `STEAM_CHANGELOG`.
+   Commit.
+3. Export the mod into the game's upload folder and upload from the title screen, Mods, Publish:
+   `git archive --prefix=long_tables/ HEAD | tar -x -C "<game data>/mods/mod_upload"`
+4. After the first upload the game adds a `STEAM_FILE_ID` line to the uploaded `info.txt`. Copy
+   that line into `info.txt` here; without it the next upload creates a second Workshop item.
+5. The Workshop page's description is `steam_description.txt`; paste it on the page after
+   changing it. `info.txt` has no `STEAM_DESCRIPTION` line on purpose: with one, every upload
+   would replace the page's description with that line.
+6. The game's upload does not set the Workshop categories reliably; check the page shows
+   `dfhack`, `qol` and `graphics` and set them there if not.
+
 ## Known limitations
 
 - Fortress mode with the graphical tiles only; no ASCII, no adventure mode.
