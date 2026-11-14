@@ -40,7 +40,7 @@ end
 local DIM_X, DIM_Y = 25, 17
 local W
 local function new_world()
-    W = {tables={}, next_handle=0, pixels={}, unrevealed={}, window_x=100, window_y=50, window_z=10}
+    W = {tables={}, building_next_id=0, next_handle=0, pixels={}, unrevealed={}, window_x=100, window_y=50, window_z=10}
     W.gps = {main_viewport=viewport(DIM_X, DIM_Y), lower_viewport={}, default_palette={color=palette(0)}}
     for i = 0, 7 do W.gps.lower_viewport[i] = viewport(DIM_X, DIM_Y) end
     -- like the game's fixed array of eight: any other index is an error
@@ -69,7 +69,7 @@ end
 -- puts the cell the game would have filled, too, unless opts.hidden
 local function add_table(x, y, z, mat, opts)
     opts = opts or {}
-    local b = {id=#W.tables + 1, centerx=x, centery=y, z=z, contained_items=vec{}}
+    local b = {id=#W.tables + 1, centerx=x, centery=y, z=z, contained_items=vec{}, jobs=vec(opts.unfinished and {{job_type=68}} or {})}   -- a table being built has its building job
     function b:getBuildStage() return opts.unfinished and 0 or 1 end
     function b:getMaxBuildStage() return 1 end
     if mat then
@@ -81,6 +81,7 @@ local function add_table(x, y, z, mat, opts)
     if opts.unrevealed then W.unrevealed[x .. ',' .. y .. ',' .. z] = true end
     if opts.broken then function b:getBuildStage() error('broken table') end end
     W.tables[#W.tables + 1] = b
+    W.building_next_id = W.building_next_id + 1      -- as the game does for every new building
     local depth = W.window_z - z
     local sx, sy = x - W.window_x, y - W.window_y
     if not opts.hidden and depth >= 0 and depth <= 8 and sx >= 0 and sx < DIM_X and sy >= 0 and sy < DIM_Y then
@@ -117,7 +118,7 @@ local function load_script(template_dir)
             getTexposByHandle=function(h) if W.no_texpos then return 0 end; return 1000 + h end,
         },
     }
-    env.df = {global=setmetatable({}, {__index=function(_, k)
+    env.df = {job_type={DestroyBuilding=9, ConstructBuilding=68}, global=setmetatable({}, {__index=function(_, k)
         if k == 'gps' then return W.gps end
         if k == 'world' then return {buildings={other={TABLE=vec(W.tables)}}, raws={descriptors=W.descriptors}} end
         return W[k]
@@ -326,14 +327,12 @@ do
     for x = 110, 114 do add_table(x, 55, 10, STONE) end           -- five in a row
     add_table(116, 55, 10, STONE)                                 -- alone, one tile further
     add_table(110, 57, 10, STONE); add_table(111, 57, 10, STONE)  -- a pair
-    add_table(110, 59, 10, STONE); add_table(110, 60, 10, STONE)  -- one above the other: no join
     add_table(113, 59, 10, STONE); add_table(114, 59, 10, {0, 1}) -- two stones side by side
     add_table(116, 59, 10, STONE); add_table(117, 59, 10, GLASS)  -- stone and glass
     I.draw_tables()
     eq('five in a row', row(110, 114, 55), 'LMMMR')
     eq('a table one tile off is alone', kind(116, 55), 'S')
     eq('a pair', row(110, 111, 57), 'LR')
-    eq('north-south neighbours do not join', kind(110, 59) .. kind(110, 60), 'SS')
     eq('different stones do not join', row(113, 114, 59), 'SS')
     eq('stone and glass do not join', row(116, 117, 59), 'SS')
     eq('empty cells stay empty', cell(112, 56), 0)
@@ -440,12 +439,164 @@ do  -- trouble: a broken table, refused textures, a missing template
     eq('and tables keep the game\'s picture', row(110, 111, 55), 'SS')
 end
 
+-- ---- tables one above the other -------------------------------------------------------------------
+do
+    fresh()
+    local T = I.template()
+    local function same(a, b) for i = 1, 1024 do if a[i] ~= b[i] then return false end end return true end
+    local function at(t, x, y) return t[y * 32 + x + 1] end
+    local function opaque_top(c) return c ~= I.CLEAR and c ~= I.SHADOW end
+    for class = 0, 3 do
+        local name = ({[0]='wood', 'stone', 'metal', 'glass'})[class]
+        local lone = I.compose(class, 0, 0)
+        local top = I.compose(class, 0, 3, {n=false, s=true, high=0, low=0, k=0})
+        local bottom = I.compose(class, 0, 3, {n=true, s=false, high=0, low=0, k=1})
+        local ok = true
+        for y = 26, 31 do for x = 3, 28 do ok = ok and opaque_top(at(top, x, y)) and at(top, x, y) ~= 0 end end
+        check(name .. ': with a table to the south the legs make way for table top', ok)
+        ok = true
+        local a0, a1 = 3, 18
+        if class >= 2 then a0, a1 = 2, 20 end
+        for y = 26, 31 do
+            local ref = a0 + (y - a0) % (a1 - a0 + 1)      -- the surface row shown there
+            ok = ok and at(top, 0, y) == at(lone, 0, ref) and at(top, 30, y) == at(lone, 30, ref)
+        end
+        check(name .. ': and the sides of the top run on down', ok)
+        ok = true
+        for x = 0, 31 do ok = ok and at(top, x, 0) == at(lone, x, 0) end
+        check(name .. ': the top of a column keeps its upper edge', ok)
+        ok = true
+        for x = 3, 28 do ok = ok and at(bottom, x, 0) ~= 0 and opaque_top(at(bottom, x, 0)) end
+        check(name .. ': with a table to the north the upper edge makes way', ok)
+        ok = true
+        for y = 26, 31 do for x = 0, 31 do ok = ok and at(bottom, x, y) == at(lone, x, y) end end
+        check(name .. ': the bottom of a column keeps its legs', ok)
+        -- the surface is the strip, gone through again and again, shifted each time
+        local c = T[class]
+        local i0, i1 = 3, 18
+        local shift = 80
+        if class >= 2 then i0, i1, shift = 2, 20, 19 end
+        local h, len = i1 - i0 + 1, I.phases() * 32
+        ok = true
+        for k = 0, 2 do
+            local t = I.compose(class, 2, 3, {n=true, s=true, high=2, low=2, k=k})
+            for y = 0, 31 do
+                local d = k * 32 + y - i0
+                local q, r = d // h, d % h
+                if class == 0 and r == 13 then r = 8 end      -- wood: the pale streak is left out
+                for x = 0, 31 do
+                    ok = ok and at(t, x, y) == c.strip[(i0 + r - c.r0) * len + (3 * 32 + q * shift + x) % len + 1]
+                end
+            end
+        end
+        check(name .. ': the inside of a deep table is the strip, row after row', ok)
+    end
+    -- wood and stone: a deep tile shows, on its surface rows, what the same tile shows in a plain row
+    for class = 0, 1 do
+        local ok = true
+        for y = 0, 17 do
+            local deep = I.compose(class, 2, I.phase_at(7, 0), {n=true, s=true, high=2, low=2, k=y % 16})
+            local flat = I.compose(class, 2, I.phase_at(7, y))
+            for row = 3, 18 do for x = 0, 31 do
+                ok = ok and (at(deep, x, row) == at(flat, x, row) or class == 0 and row == 16)
+            end end
+        end
+        check('class ' .. class .. ': deep and plain tiles show the same surface', ok)
+    end
+    do  -- wood: no row of a deep tile is the long pale streak (sprite row 16: seventeen 7s in a row)
+        local deep = I.compose(0, 2, 0, {n=true, s=true, high=2, low=2, k=0})
+        local longest = 0
+        for y = 0, 31 do
+            local run = 0
+            for x = 0, 31 do
+                run = at(deep, x, y) == 7 and run + 1 or 0
+                if run > longest then longest = run end
+            end
+        end
+        check('wood: no long pale streak in a deep tile', longest < 12, longest)
+    end
+    -- an inner corner: joined to the east, table to the north, nothing to the north-east
+    local corner = I.compose(1, 1, 0, {n=true, s=false, high=0, low=1, k=1})
+    eq('inner corner: the outline reaches the tile\'s edge in the first row', at(corner, 31, 0), 0)
+    eq('inner corner: and only there', at(corner, 31, 1) ~= 0 and at(corner, 30, 1) ~= 0, true)
+
+    for class = 0, 3 do
+        for k = 0, 15 do
+            local t = I.compose(class, 1, 0, {n=true, s=false, high=0, low=1, k=k})
+            if at(t, 31, 0) ~= 0 then check('class ' .. class .. ' inner corner closed at depth ' .. k, false) end
+        end
+        -- the same below: joined to the west, table to the south, nothing to the south-west
+        local t = I.compose(class, 3, 0, {n=false, s=true, high=3, low=0, k=0})
+        eq('class ' .. class .. ': lower inner corner, west', at(t, 0, 25), 0)
+        check('class ' .. class .. ': lower inner corner, west: only that pixel', at(t, 1, 25) ~= 0)
+        t = I.compose(class, 1, 0, {n=false, s=true, high=1, low=0, k=0})
+        eq('class ' .. class .. ': lower inner corner, east', at(t, 31, 25), 0)
+        t = I.compose(class, 2, 0, {n=false, s=true, high=2, low=2, k=0})
+        check('class ' .. class .. ': no corner inside a block', at(t, 0, 25) ~= 0 and at(t, 31, 25) ~= 0)
+    end
+    -- which picture each tile of a shape gets
+    local function vert(n, s, high, low, k) return {n=n, s=s, high=high, low=low, k=k} end
+    local function is(name, x, y, mat, piece, v, ky)
+        local tint = I.material_tint(mat[1], mat[2])
+        eq(name, cell(x, y) ~= 7 and same(pixels(cell(x, y)), I.paint_tile(tint, piece, I.phase_at(x, y - ky), v)), true)
+    end
+    add_table(110, 59, 10, GLASS); add_table(110, 60, 10, GLASS); add_table(110, 61, 10, GLASS)   -- a column
+    add_table(113, 59, 10, GLASS); add_table(113, 60, 10, STONE)                                  -- glass over stone
+    -- an L of stone: 116,56 / 116,57 / 116,58 117,58
+    add_table(116, 56, 10, STONE); add_table(116, 57, 10, STONE); add_table(116, 58, 10, STONE); add_table(117, 58, 10, STONE)
+    -- a T of glass: 119..121,60 and 120,61
+    for x = 119, 121 do add_table(x, 60, 10, GLASS) end
+    add_table(120, 61, 10, GLASS)
+    -- a block of glass, two by two
+    for x = 119, 120 do for y = 56, 57 do add_table(x, y, 10, GLASS) end end
+    -- a column that starts above the view (the view's first row is 50)
+    add_table(105, 48, 10, GLASS); add_table(105, 49, 10, GLASS); add_table(105, 50, 10, GLASS)
+    I.draw_tables()
+    is('column: top', 110, 59, GLASS, 0, vert(false, true, 0, 0, 0), 0)
+    is('column: middle', 110, 60, GLASS, 0, vert(true, true, 0, 0, 1), 1)
+    is('column: bottom', 110, 61, GLASS, 0, vert(true, false, 0, 0, 2), 2)
+    eq('glass over stone does not join', cell(113, 59) .. ':' .. cell(113, 60), '7:7')
+    is('L: top of the upright', 116, 56, STONE, 0, vert(false, true, 0, 0, 56 % 16), 56)
+    is('L: corner', 116, 58, STONE, 1, vert(true, false, 0, 1, 58 % 16), 58)
+    is('L: foot is a plain right end', 117, 58, STONE, 3, nil, 0)
+    is('T: left arm has no leg at the stem', 119, 60, GLASS, 1, vert(false, false, 1, 0, 0), 0)
+    is('T: middle of the bar', 120, 60, GLASS, 2, vert(false, true, 2, 0, 0), 0)
+    is('T: stem', 120, 61, GLASS, 0, vert(true, false, 0, 0, 1), 1)
+    is('block: top left', 119, 56, GLASS, 1, vert(false, true, 1, 1, 0), 0)
+    is('block: bottom right', 120, 57, GLASS, 3, vert(true, false, 3, 3, 1), 1)
+    is('a column from above the view is counted from its top', 105, 50, GLASS, 0, vert(true, false, 0, 0, 2), 2)
+    do  -- wood: the arms of a T lose the pale streak too; a plain row keeps it
+        local WOOD = {420, 7}
+        for x = 100, 104 do add_table(x, 64, 10, WOOD) end
+        add_table(102, 65, 10, WOOD)
+        for x = 107, 111 do add_table(x, 64, 10, WOOD) end
+        I.draw_tables()
+        local function streak(x, y)
+            local px, col = pixels(cell(x, y)), I.tint_colours(I.material_tint(420, 7))
+            local longest, run = 0, 0
+            for i = 0, 31 do
+                run = px[16 * 32 + i + 1] == col[7] and run + 1 or 0
+                if run > longest then longest = run end
+            end
+            return longest
+        end
+        local worst, best = 0, 0
+        for x = 100, 104 do worst = math.max(worst, streak(x, 64)) end
+        for x = 107, 111 do best = math.max(best, streak(x, 64)) end
+        check('wood T: no pale streak along the bar', worst < 12, worst)
+        check('wood row: the pale streak stays', best >= 12, best)
+    end
+    local tiles = W.next_handle
+    I.draw_tables()
+    eq('deep tables: a second frame paints nothing new', W.next_handle, tiles)
+end
+
 do  -- found by review
     fresh()
     add_table(110, 55, 10, STONE); add_table(111, 55, 10, {0, 5})                 -- same colour and class
     add_table(110, 57, 10, {-1, -1}); add_table(111, 57, 10, {-1, -1})            -- negative material numbers
     add_table(99, 59, 10, STONE, {unrevealed=true}); add_table(100, 59, 10, STONE)
-    for x = 105, 108 do add_table(x, 61, 10, STONE); add_table(x, 62, 10, STONE) end
+    for x = 105, 108 do add_table(x, 61, 10, STONE); add_table(x, 63, 10, STONE) end
     add_table(110, 49, 10, STONE); add_table(110, 67, 10, STONE)                  -- above and below the view
     I.draw_tables()
     eq('stones of one colour but another kind do not join', row(110, 111, 55), 'SS')
@@ -456,11 +607,11 @@ do  -- found by review
     -- each tile shows the stretch of the strip for its place on the map
     local function same(a, b) for i = 1, 1024 do if a[i] ~= b[i] then return false end end return true end
     local tint = I.material_tint(0, 0)
-    for x = 106, 107 do for y = 61, 62 do
+    for x = 106, 107 do for y = 61, 63, 2 do
         check('phase of ' .. x .. ',' .. y, same(pixels(cell(x, y)), I.paint_tile(tint, 2, I.phase_at(x, y))))
     end end
     check('neighbours differ', not same(pixels(cell(106, 61)), pixels(cell(107, 61))))
-    check('rows differ', not same(pixels(cell(106, 61)), pixels(cell(106, 62))))
+    check('rows differ', not same(pixels(cell(106, 61)), pixels(cell(106, 63))))
     local before = cell(106, 61)
     W.window_x = W.window_x - 1      -- scrolling does not change a tile's picture
     W.gps.main_viewport = viewport(DIM_X, DIM_Y)
@@ -504,6 +655,312 @@ do  -- found by review
     check('repainted after the world was unloaded', W.next_handle > painted)
     r = rgba(pixels(cell(110, 55))[10 * 32 + 16 + 1])
     check('in the new world\'s colour', r >= 70 + 9, r)
+end
+
+do  -- what is remembered between frames, and when it is thrown away
+    -- the game fills the layer anew every frame: its picture for every table it shows
+    local function game_draws()
+        local cells = W.gps.main_viewport.screentexpos_building_one
+        for i = 0, DIM_X * DIM_Y - 1 do cells[i] = 0 end
+        for _, b in ipairs(W.tables) do
+            local sx, sy = b.centerx - W.window_x, b.centery - W.window_y
+            if b.z == W.window_z and not b.gone and not b.not_shown and sx >= 0 and sx < DIM_X and sy >= 0 and sy < DIM_Y then
+                cells[sx * DIM_Y + sy] = 7
+            end
+        end
+    end
+    local function frame() game_draws(); I.draw_tables() end
+
+    fresh()
+    local asked = 0
+    local function counted(b)
+        local stage = b.getBuildStage
+        function b:getBuildStage() asked = asked + 1; return stage(self) end
+        return b
+    end
+    for x = 110, 112 do counted(add_table(x, 55, 10, STONE)) end
+    frame()
+    eq('drawn', row(110, 112, 55), 'LMR')
+    local after_first, painted = asked, W.next_handle
+    for _ = 1, 20 do frame() end
+    eq('drawn again every frame', row(110, 112, 55), 'LMR')
+    eq('later frames do not ask the game about finished tables', asked, after_first)
+    eq('and paint nothing', W.next_handle, painted)
+
+    -- a table being built joins when it is finished, without any new building
+    fresh()
+    add_table(110, 55, 10, STONE)
+    local late = add_table(111, 55, 10, STONE, {unfinished=true})
+    frame(); frame()
+    eq('not joined while it is built', row(110, 111, 55), 'SS')
+    function late:getBuildStage() return 1 end
+    frame()
+    eq('joined the frame it is finished', row(110, 111, 55), 'LR')
+
+    -- a table is taken away
+    fresh()
+    for x = 110, 112 do add_table(x, 55, 10, STONE) end
+    frame()
+    W.tables[3].gone = true; table.remove(W.tables, 3)
+    frame()
+    eq('the others close up the frame a table is removed', row(110, 112, 55), 'LR-')
+
+    -- one is removed and another built in the same frame: the count is the same
+    fresh()
+    for x = 110, 112 do add_table(x, 55, 10, STONE) end
+    frame()
+    W.tables[3].gone = true; table.remove(W.tables, 3)
+    add_table(110, 57, 10, STONE)
+    frame()
+    eq('a swap of tables is seen', row(110, 112, 55) .. kind(110, 57), 'LR-S')
+
+    -- the game starts and stops showing a table
+    fresh()
+    add_table(110, 55, 10, STONE); local mid = add_table(111, 55, 10, STONE); add_table(112, 55, 10, STONE)
+    mid.not_shown = true
+    frame(); frame()
+    eq('a table not shown splits the row', row(110, 112, 55), 'S-S')
+    mid.not_shown = false
+    frame()
+    eq('joined the frame it is shown', row(110, 112, 55), 'LMR')
+    mid.not_shown = true
+    frame()
+    eq('split again the frame it is not', row(110, 112, 55), 'S-S')
+    eq('and its cell is left empty', cell(111, 55), 0)
+
+    -- a neighbour off the edge is revealed: seen at the next look around
+    fresh()
+    add_table(99, 55, 10, STONE, {unrevealed=true}); add_table(100, 55, 10, STONE)
+    frame()
+    eq('unrevealed off the edge: no join', kind(100, 55), 'S')
+    W.unrevealed = {}
+    for _ = 1, 31 do frame() end
+    eq('revealed off the edge: joined within 31 frames', kind(100, 55), 'R')
+
+    -- the camera moves and comes back
+    fresh()
+    for x = 110, 112 do add_table(x, 55, 10, STONE) end
+    frame()
+    local was = cell(111, 55)
+    W.window_y = W.window_y + 3; frame()
+    eq('after a scroll the tiles are at their new cells', row(110, 112, 55), 'LMR')
+    eq('with the same picture', cell(111, 55), was)
+    eq('and nothing at the old cells', W.gps.main_viewport.screentexpos_building_one[(111 - W.window_x) * DIM_Y + (55 - 50)], 0)
+    W.window_z = 11; frame()
+    eq('nothing drawn on a level without tables', W.gps.main_viewport.screentexpos_building_one[(111 - W.window_x) * DIM_Y + (55 - W.window_y)], 0)
+    W.window_z = 10; frame()
+    eq('back on the level', row(110, 112, 55), 'LMR')
+
+    -- the map is given another size on screen
+    W.gps.main_viewport = viewport(DIM_X, DIM_Y - 2)
+    local cells = W.gps.main_viewport.screentexpos_building_one
+    for x = 110, 112 do cells[(x - W.window_x) * (DIM_Y - 2) + (55 - W.window_y)] = 7 end
+    I.draw_tables()
+    local got = ''
+    for x = 110, 112 do got = got .. (cells[(x - W.window_x) * (DIM_Y - 2) + (55 - W.window_y)] ~= 7 and 'x' or '-') end
+    eq('a view of another size: cells worked out anew', got, 'xxx')
+    local stray = 0
+    for i in pairs(cells) do if i < 0 or i >= DIM_X * (DIM_Y - 2) then stray = stray + 1 end end
+    eq('and nothing written outside it', stray, 0)
+
+    -- `long-tables reload` (a later run of the script) reaches the copy that draws
+    fresh()
+    add_table(110, 55, 10, STONE); add_table(111, 55, 10, STONE)
+    frame()
+    local old = cell(110, 55)
+    m.tile_handles = {}; m.GENERATION = m.GENERATION + 1
+    frame()
+    check('repainted after a reload', cell(110, 55) ~= old and cell(110, 55) ~= 7)
+
+    -- `singles` takes effect at once
+    m.draw_singles = 'only'; frame()
+    eq('singles only', row(110, 111, 55), 'ss')
+    m.draw_singles = false; frame()
+    eq('singles off', row(110, 111, 55), 'LR')
+
+    -- a material changed under a table (not something the game does) is seen in the end
+    local item = W.tables[2].contained_items[0].item
+    function item:getMaterial() return 3 end
+    for _ = 1, 601 do frame() end
+    eq('a changed material is seen within 601 frames', row(110, 111, 55), 'SS')
+
+    -- no tables at all, then some
+    fresh()
+    frame()
+    add_table(110, 55, 10, STONE); add_table(111, 55, 10, STONE)
+    frame()
+    eq('the first tables of a fortress', row(110, 111, 55), 'LR')
+    W.tables = {}
+    frame()
+    add_table(110, 55, 10, STONE); add_table(111, 55, 10, STONE)
+    frame()
+    eq('and after all were removed', row(110, 111, 55), 'LR')
+end
+
+
+do  -- found by review of the remembering: each of these fails if one of its checks is taken out
+    local function game_draws()
+        for depth = 0, 8 do
+            local vp = depth == 0 and W.gps.main_viewport or W.gps.lower_viewport[depth - 1]
+            if vp then
+                local cells = vp.screentexpos_building_one
+                for i = 0, vp.dim_x * vp.dim_y - 1 do cells[i] = 0 end
+            end
+        end
+        for _, b in ipairs(W.tables) do
+            local depth = W.window_z - b.z
+            local sx, sy = b.centerx - W.window_x, b.centery - W.window_y
+            local vp = depth == 0 and W.gps.main_viewport or depth >= 1 and depth <= 8 and W.gps.lower_viewport[depth - 1]
+            if vp and not b.not_shown and sx >= 0 and sx < vp.dim_x and sy >= 0 and sy < vp.dim_y then
+                vp.screentexpos_building_one[sx * vp.dim_y + sy] = 7
+            end
+        end
+    end
+    local function frame() game_draws(); I.draw_tables() end
+
+    fresh()   -- A
+    add_table(99, 55, 10, STONE); add_table(100, 55, 10, STONE)
+    frame()
+    eq('joined to a neighbour off the edge', kind(100, 55), 'R')
+    table.remove(W.tables, 1)
+    frame()
+    eq('the neighbour off the edge is removed: seen that frame', kind(100, 55), 'S')
+
+    fresh()   -- B
+    add_table(110, 55, 10, STONE); add_table(111, 57, 10, STONE, {unfinished=true})
+    frame()
+    table.remove(W.tables, 1)
+    check('a removal before an unfinished table: no error', (pcall(frame)))
+
+    fresh()   -- C
+    add_table(110, 55, 10, STONE); add_table(111, 55, 10, STONE); add_table(120, 60, 10, STONE)
+    frame()
+    table.remove(W.tables, 3); add_table(109, 55, 10, STONE)
+    frame()
+    eq('swap: the new table joins that frame', row(109, 111, 55), 'LMR')
+
+    fresh()   -- D
+    for x = 98, 127 do add_table(x, 55, 10, STONE) end
+    frame()
+    local was = cell(110, 55)
+    W.window_x = W.window_x + 1; frame()
+    eq('full-width row scrolled sideways: same tile, same picture', cell(110, 55), was)
+
+    fresh()   -- E
+    for y = 40, 76 do add_table(110, y, 10, STONE) end
+    frame()
+    was = cell(110, 58)
+    W.window_y = W.window_y + 1; frame()
+    eq('full-height column scrolled: same tile, same picture', cell(110, 58), was)
+
+    fresh()   -- F
+    add_table(110, 66, 10, STONE); add_table(111, 66, 10, STONE)
+    W.gps.main_viewport = viewport(DIM_X, 10)
+    I.draw_tables()
+    W.gps.main_viewport = viewport(DIM_X, DIM_Y)
+    frame()
+    eq('a bigger view brings tables in: drawn that frame', row(110, 111, 66), 'LR')
+
+    fresh()   -- G
+    add_table(110, 55, 10, STONE); add_table(111, 55, 10, STONE); add_table(110, 55, 7, STONE); add_table(111, 55, 7, STONE)
+    frame()
+    eq('both levels', row(110, 111, 55) .. row(110, 111, 55, 3), 'LRLR')
+    W.gps.lower_viewport[2] = nil
+    frame()
+    eq('the main level is still drawn the frame a lower layer goes', row(110, 111, 55), 'LR')
+
+    fresh()   -- H
+    local a, b = add_table(110, 55, 10, STONE), add_table(111, 55, 10, STONE)
+    a.not_shown, b.not_shown = true, true
+    frame()
+    a.not_shown, b.not_shown = false, false
+    frame()
+    eq('a level with no table shown: joined the frame they are shown', row(110, 111, 55), 'LR')
+
+    fresh()   -- I
+    add_table(99, 55, 9, STONE, {unrevealed=true}); add_table(100, 55, 9, STONE)
+    frame()
+    eq('an unrevealed table off the edge a level down does not join', kind(100, 55, 1), 'S')
+
+    fresh()   -- J
+    add_table(110, 66, 10, GLASS); add_table(110, 67, 10, GLASS)
+    frame()
+    check('a table below the view joins the last row', cell(110, 66) ~= 7)
+
+    fresh()   -- K
+    local WOOD = {420, 7}
+    for x = 104, 100, -1 do add_table(x, 64, 10, WOOD) end
+    add_table(102, 65, 10, WOOD)
+    frame()
+    local worst = 0
+    for x = 100, 104 do
+        local px, col = pixels(cell(x, 64)), I.tint_colours(I.material_tint(420, 7))
+        local run = 0
+        for i = 0, 31 do
+            run = px[16 * 32 + i + 1] == col[7] and run + 1 or 0
+            if run > worst then worst = run end
+        end
+    end
+    check('wood T listed east to west: no pale streak along the bar', worst < 12, worst)
+
+    fresh()   -- L
+    add_table(110, 55, 10, STONE); add_table(111, 55, 10, STONE)
+    m.dfhack.textures.createTile = function() error('boom') end
+    local ok, err = pcall(frame)
+    check('a texture that raises is reported', not ok and tostring(err):find('boom'), err)
+
+    fresh()   -- M: the reload command itself, with the old copy still drawing
+    add_table(110, 55, 10, STONE); add_table(111, 55, 10, STONE)
+    frame()
+    local old = cell(110, 55)
+    m.dfhack_flags = {module=false}
+    m.qerror = error
+    local out = print
+    m.print = function() end
+    assert(loadfile(SCRIPT, 't', m))('reload')
+    frame()      -- I is still the first copy
+    check('repainted after the reload command', cell(110, 55) ~= old and cell(110, 55) ~= 7)
+
+    fresh()   -- a dwarf takes a table apart: its build stage drops before it is gone
+    add_table(110, 55, 10, STONE); add_table(111, 55, 10, STONE)
+    local going = add_table(112, 55, 10, STONE)
+    frame()
+    function going:getBuildStage() return 0 end
+    going.jobs = vec{{job_type=68}, {job_type=9}}
+    for _ = 1, 601 do frame() end
+    eq('a table being taken apart stays joined, also after the tables are read again', row(110, 112, 55), 'LMR')
+    going.jobs = vec{{job_type=68}}
+    frame()
+    eq('if the removal is called off half way it is a table being built, at once', row(110, 112, 55), 'LRS')
+    going.jobs = vec{{job_type=9}}
+    for _ = 1, 601 do frame() end
+    eq('taken up again it joins again (when the tables are next read)', row(110, 112, 55), 'LMR')
+    function going:getBuildStage() return 1 end
+    going.jobs = vec{}
+    local before = m.STATS.indexes
+    frame()
+    eq('called off and whole again: still joined', row(110, 112, 55), 'LMR')
+    check('and the tables are read again once, not every frame', (function() frame(); frame(); return m.STATS.indexes == before + 1 end)())
+    table.remove(W.tables, 3)
+    frame()
+    eq('and gone is gone', row(110, 112, 55), 'LR-')
+
+    fresh()   -- every table as a lone one: wood one above the other too
+    add_table(110, 55, 10, WOOD); add_table(110, 56, 10, WOOD); add_table(113, 55, 10, WOOD)
+    m.draw_singles = 'only'
+    frame()
+    local function same(a, b) for i = 1, 1024 do if a[i] ~= b[i] then return false end end return true end
+    check('singles only: wood above wood is the lone table', same(pixels(cell(110, 55)), pixels(cell(113, 55))))
+    m.draw_singles = false
+
+    fresh()   -- a lower layer that is not there when the view is worked out, and then is
+    add_table(110, 55, 9, STONE); add_table(111, 55, 9, STONE)
+    local kept = W.gps.lower_viewport[0]
+    W.gps.lower_viewport[0] = nil
+    frame()
+    W.gps.lower_viewport[0] = kept
+    frame()
+    eq('a lower layer that comes back is drawn in that frame', row(110, 111, 55, 1), 'LR')
 end
 
 print(('%d checks, %d failed'):format(count, failures))

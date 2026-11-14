@@ -3,8 +3,8 @@
 --@ module = true
 --
 -- All of it is this script: one overlay widget that, after the game has drawn the map, puts the
--- pictures of joined tables in the map's building layer.  Nothing is stored; which tables join is
--- worked out again every frame from where the tables stand.
+-- pictures of joined tables in the map's building layer.  Nothing is stored in the save; which
+-- tables join is worked out from where the tables stand, and remembered only while nothing changes.
 
 local overlay = require('plugins.overlay')
 
@@ -168,26 +168,108 @@ local function tint_colours(tint)
     return col
 end
 
+-- The rows of the top's surface proper (between the lines along its edges) for each class, and
+-- how far the surface is shifted sideways each time those rows are gone through again further
+-- down a table that is more than one tile deep.
+--   Wood and stone: the rows fit twice in a tile, and two shifts are the five tiles that
+--   phase_at() moves the surface from one map row to the next.  So counting the tiles down from
+--   map row 0 (vert.k = y) gives every tile, deep or not, the same surface it has in a plain
+--   row of tables, and the arms of an L or T fit the part that is deep.
+--   Metal and glass: the shift is the height of the rows, so the slanted streaks carry on in a
+--   line; tiles are counted down from the top of their column.
+local INTERIOR = {[0]={3, 18, 80}, {3, 18, 80}, {2, 20, 19}, {2, 20, 19}}
+-- Wood: sprite row 16 is one long pale streak of grain.  Once per table it is grain; down a deep
+-- table it comes back every sixteen rows and reads as lines ruled across the top.  A tile of a
+-- deep table shows row 11 (plain grain) in its place, and so do the tiles in a row with one
+-- (vert.calm), or the streak would run along the arm of an L or T and stop dead at the deep part.
+local PALE_ROW, PLAIN_ROW = 16 - 3, 11 - 3
+local function counts_from_map_top(class) return class == CLASS_WOOD or class == CLASS_STONE end
+local LEG_ROW = 26
+local OUTLINE = 0        -- the shade of the line around the table
+
+local function piece_of(west, east)
+    return west and (east and MIDDLE or RIGHT) or east and LEFT or SINGLE
+end
+
+-- The columns of a piece that are table top, not edge.
+local function extent(piece)
+    return (piece == LEFT or piece == SINGLE) and 3 or 0,
+           (piece == RIGHT or piece == SINGLE) and TILE - 4 or TILE - 1
+end
+
 -- The shade codes of one tile: the piece, and for a piece of a joined table the stretch of the
 -- strip for its phase laid over the top, and at the ends of a stone table the extra speckles.
-local function compose(class, piece, phase)
+--
+-- vert, for a tile of a table more than one tile deep (north to south), is
+--   {n=, s=    a like table north / south of this one
+--    high=, low=   the piece (SINGLE..RIGHT) the top rows and the leg rows are drawn as, where
+--                  that is not `piece` (see draw_tables)
+--    k=        how many tiles down the tile is: from map row 0 (wood, stone) or from the top of
+--              its column (metal, glass)}
+-- and phase is then the phase of the tile k tiles further north.  With a table to the south the legs
+-- make way for more table top; with one to the north the top's upper edge does.
+local function compose(class, piece, phase, vert)
     local c = template[class]
     local out = {}
     local src = c[piece]
     for i = 1, TILE * TILE do out[i] = src[i] end
-    if piece == SINGLE then return out end
-    -- an end keeps its own outer edge
-    local x0 = piece == LEFT and 3 or 0
-    local x1 = piece == RIGHT and TILE - 4 or TILE - 1
+    if piece == SINGLE and not vert then return out end
     local len = phases * TILE
-    for y = c.r0, c.r1 do
-        local row = (y - c.r0) * len + phase * TILE
-        for x = x0, x1 do out[y * TILE + x + 1] = c.strip[row + x + 1] end
+    local i0, i1, shift = INTERIOR[class][1], INTERIOR[class][2], INTERIOR[class][3]
+    local h = i1 - i0 + 1
+    local n, s = vert and vert.n, vert and vert.s
+    local high, low = vert and vert.high or piece, vert and vert.low or piece
+    local v0 = (vert and vert.k or 0) * TILE
+    for y = 0, TILE - 1 do
+        -- (with a table to the north, `high` is only for the first row: see the inner corner below)
+        local p = y < i0 and (not n or y == 0) and high or y >= LEG_ROW and low or piece
+        local x0, x1 = extent(p)
+        local surface = y >= i0 and y <= i1 or n and y < i0 or s and y > i1
+        local d = v0 + y - i0
+        local base = y * TILE
+        if surface then
+            local q, r = d // h, d % h
+            if class == CLASS_WOOD and r == PALE_ROW and (n or s or vert and vert.calm) then r = PLAIN_ROW end
+            if y < i0 or y > i1 then
+                -- a row that is edge or legs on the game's table: the sides of a surface row
+                local from = c[p]
+                local ref = (i0 + r) * TILE
+                for x = 0, TILE - 1 do out[base + x + 1] = from[ref + x + 1] end
+            end
+            local row = (i0 + r - c.r0) * len
+            local x_strip = phase * TILE + q * shift
+            for x = x0, x1 do out[base + x + 1] = c.strip[row + (x_strip + x) % len + 1] end
+        else
+            if p ~= piece then
+                local from = c[p]
+                for x = 0, TILE - 1 do out[base + x + 1] = from[base + x + 1] end
+            end
+            if p ~= SINGLE and y >= c.r0 and y <= c.r1 then
+                local row = (y - c.r0) * len + phase * TILE
+                for x = x0, x1 do out[base + x + 1] = c.strip[row + x + 1] end
+            end
+        end
     end
-    if piece ~= MIDDLE then
+    -- An inner corner: the table goes on to the north and to one side, but not diagonally.  The
+    -- outline of the side of the part to the north ends in this tile's first row, where it has to
+    -- meet the outline along the top of the part to the side.
+    if n and high ~= piece then
+        if (piece == LEFT or piece == MIDDLE) and (high == SINGLE or high == RIGHT) then out[TILE] = OUTLINE end
+        if (piece == RIGHT or piece == MIDDLE) and (high == SINGLE or high == LEFT) then out[1] = OUTLINE end
+    end
+    -- The same below: the table goes on to the south and to one side, but not diagonally.  The
+    -- outline under the part to the side (row 25) has to reach the outline of the side of the
+    -- part to the south, which starts a row lower and a pixel in.
+    if s and low ~= piece then
+        local row = (LEG_ROW - 1) * TILE
+        if (piece == LEFT or piece == MIDDLE) and (low == SINGLE or low == RIGHT) then out[row + TILE] = OUTLINE end
+        if (piece == RIGHT or piece == MIDDLE) and (low == SINGLE or low == LEFT) then out[row + 1] = OUTLINE end
+    end
+    if piece == LEFT or piece == RIGHT then
+        local x0, x1 = extent(piece)
         for _, e in ipairs(c.ends[phase % END_SETS + 1]) do
             local x = piece == LEFT and x0 + e[1] or x1 - e[1]
-            if x >= x0 and x <= x1 and e[2] >= c.r0 and e[2] <= c.r1 then
+            if x >= x0 and x <= x1 and e[2] >= i0 and e[2] <= i1 then
                 out[e[2] * TILE + x + 1] = e[3]
             end
         end
@@ -196,10 +278,10 @@ local function compose(class, piece, phase)
 end
 
 -- The pixels of one tile for a tint key; nil without a palette.
-local function paint_tile(tint, piece, phase)
+local function paint_tile(tint, piece, phase, vert)
     local col = tint_colours(tint)
     if not col then return nil end
-    local px = compose(tint & 3, piece, phase)
+    local px = compose(tint & 3, piece, phase, vert)
     for i = 1, TILE * TILE do px[i] = col[px[i]] or 0 end
     return px
 end
@@ -209,22 +291,30 @@ end
 -- deleted: DFHack does not hand a deleted handle's slot back cleanly.
 tile_handles = tile_handles or {}
 STATS = STATS or {frames=0, cells=0, tiles=0}
+STATS.indexes, STATS.views = STATS.indexes or 0, STATS.views or 0
+-- Raised whenever what the drawing code remembers has to go.  (A global, like the two above: a
+-- later run of this script as a command is another run of this file with its own locals, and it
+-- has to reach the copy the overlay is drawing with.)
+GENERATION = GENERATION or 0
 
--- Texpos of a tile; nil if it cannot be had.
-local function tile_texpos(tint, piece, phase)
-    if piece == SINGLE then phase = 0 end
+-- The texture handle of a tile; nil if it cannot be had.
+local K_WRAP = 16     -- a deep table's surface starts over after this many tiles down
+local function tile_handle(tint, piece, phase, vert)
+    if piece == SINGLE and not vert then phase = 0 end
     local key = tint | piece << 32 | phase << 36
+    if vert then
+        key = key | (1 | (vert.n and 2 or 0) | (vert.s and 4 or 0) | vert.high << 3 | vert.low << 5 | vert.k << 7 | (vert.calm and 1 or 0) << 11) << 44
+    end
     local handle = tile_handles[key]
     if not handle then
-        local px = template and paint_tile(tint, piece, phase)
+        local px = template and paint_tile(tint, piece, phase, vert)
         handle = px and dfhack.textures.createTile(px, TILE, TILE)
         -- a refused texture is left out, so the next draw asks again
         if not handle or handle == 0 then return nil end
         tile_handles[key] = handle
         STATS.tiles = STATS.tiles + 1
     end
-    local texpos = dfhack.textures.getTexposByHandle(handle)
-    return texpos and texpos > 0 and texpos or nil
+    return handle
 end
 
 -- (keyed by where this copy lives: DFHack can have two copies of a mod's script loaded, and each
@@ -232,6 +322,7 @@ end
 dfhack.onStateChange[NAME .. ':' .. DATA] = function(event)
     if event == SC_WORLD_UNLOADED then
         tint_of_material, tile_handles = {}, {}
+        GENERATION = GENERATION + 1
     end
 end
 
@@ -256,7 +347,6 @@ end
 
 -- A finished table's material as one number, nil for a table that does not take part.
 local function material_key(b)
-    if b:getBuildStage() < b:getMaxBuildStage() then return nil end
     local items = b.contained_items
     if #items == 0 then return nil end
     local item = items[0].item
@@ -264,8 +354,9 @@ local function material_key(b)
 end
 
 -- Where a table is on the screen, as one number; depth 0 is the level in view.
+local MARGIN = 64      -- tables this far above and below the view are noted too
 local function spot(depth, sx, sy)
-    return depth << 40 | (sx + 1) << 20 | sy
+    return depth << 40 | (sx + 1) << 20 | (sy + MARGIN)
 end
 
 -- The building layer of the viewport a depth is drawn in, nil if there is none of the size of
@@ -276,26 +367,71 @@ local function layer(depth, main, lower, dim_x, dim_y)
     return vp.screentexpos_building_one
 end
 
--- Pass 1: note the material of every finished table the game shows, and of those one tile off
--- the left or right edge of the view (they can be the neighbour of one in view).  A table the
--- game does not show does not join: its neighbour would end in nothing.
-local function note_table(b, mats, list, wx, wy, wz, dim_x, dim_y, main, lower)
-    local depth = wz - b.z
-    if depth < 0 or depth > LOWER_LEVELS then return end
-    local sx, sy = b.centerx - wx, b.centery - wy
-    if sx < -1 or sx > dim_x or sy < 0 or sy >= dim_y then return end
-    local in_view = sx >= 0 and sx < dim_x
-    if in_view then
-        local cells = layer(depth, main, lower, dim_x, dim_y)
-        if not cells or cells[sx * dim_y + sy] == 0 then return end
-    elseif not dfhack.maps.isTileVisible(b.centerx, b.centery, b.z) then
-        -- off the edge there is no cell to tell whether the game shows it
-        return
+-- Asking the game about every table every frame is what costs time, so it is done as seldom as
+-- can be, in three steps that each keep what they found:
+--
+--   the index   where every finished table stands and what it is made of, by level.  Tables do
+--               not move or change material, so it is made again only when the game's list of
+--               tables changes (its length, or the id the next building will get), when a table
+--               that was being built is finished or the removal of one is called off, and every REINDEX_FRAMES frames regardless, for
+--               whatever changes a table in a way that does not show in those.
+--   the view    for one position of the camera: which cells of the map get which tile.  Made
+--               again when the camera, the size of the map on screen or the index changes, when a
+--               table in view starts or stops being shown by the game, and every VIEW_FRAMES
+--               frames regardless (a table just outside the view can have been revealed).
+--   each frame  the cells of the view are checked and written: two lookups per table in view.
+local REINDEX_FRAMES = 600
+local VIEW_FRAMES = 30
+
+local index             -- [z] = {n=, xs=, ys=, keys=}
+local index_count, index_next_id, index_age = -1, -1, 0
+local unfinished = {}   -- positions in the game's list of the tables still being built
+local removing = {}     -- and of those a dwarf has begun to take apart
+local view              -- see make_view()
+local generation = -1
+
+-- Is a dwarf taking this table apart?  (Its build stage goes down while that is done.)
+local function being_removed(b)
+    local jobs = b.jobs
+    for i = 0, #jobs - 1 do
+        if jobs[i].job_type == df.job_type.DestroyBuilding then return true end
+    end
+    return false
+end
+
+local function index_table(b, i, byz, unfinished, removing)
+    -- a table that is being built does not take part; one that is being taken apart does until
+    -- it is gone, so a long table is not drawn in pieces while a dwarf works on one end of it
+    if b:getBuildStage() < b:getMaxBuildStage() then
+        if not being_removed(b) then
+            unfinished[#unfinished + 1] = i
+            return
+        end
+        removing[#removing + 1] = i     -- watched: the removal can be called off half way
     end
     local key = material_key(b)
     if not key then return end
-    mats[spot(depth, sx, sy)] = key
-    if in_view then list[#list + 1] = b end
+    local z = b.z
+    local level = byz[z]
+    if not level then
+        level = {n=0, xs={}, ys={}, keys={}}
+        byz[z] = level
+    end
+    local n = level.n + 1
+    level.n, level.xs[n], level.ys[n], level.keys[n] = n, b.centerx, b.centery, key
+end
+
+local function make_index(v, count, next_id)
+    local byz, first_err = {}, nil
+    unfinished, removing = {}, {}
+    for i = 0, count - 1 do
+        local ok, err = pcall(index_table, v[i], i, byz, unfinished, removing)
+        if not ok and not first_err then first_err = err end
+    end
+    index, index_count, index_next_id, index_age = byz, count, next_id, 0
+    STATS.indexes = STATS.indexes + 1
+    view = nil
+    return first_err
 end
 
 -- For checking the template against the game's own picture: draw lone tables too, from the
@@ -303,42 +439,225 @@ end
 -- table as a lone one (`long-tables singles only`).
 draw_singles = draw_singles or false
 
-local function draw_tables()
-    if not template then return end
-    local gps = df.global.gps
-    local main, lower = gps.main_viewport, gps.lower_viewport
-    local wx, wy, wz = df.global.window_x, df.global.window_y, df.global.window_z
-    local dim_x, dim_y = main.dim_x, main.dim_y
-    local mats, list = {}, {}
-    local first_err
-    for _, b in ipairs(df.global.world.buildings.other.TABLE) do
-        local ok, err = pcall(note_table, b, mats, list, wx, wy, wz, dim_x, dim_y, main, lower)
-        if not ok and not first_err then first_err = err end
+-- Work out the view: note the material of every finished table the game shows, and of those just
+-- off the view (they can be the neighbour of one in view; a table the game does not show does not
+-- join: its neighbour would end in nothing), then give every noted table with a like neighbour
+-- its piece.
+--
+-- A view is {wx=, wy=, wz=, dim_x=, dim_y=, singles=, age=, handles={}, texpos={}, levels={...}}
+-- and each level {depth=, n=, cell={}, tile={}, hidden={}}: the cells of the tables in view that
+-- the game shows, each with the place in `handles` of the texture handle of its tile (false for a
+-- table left to the game), and the cells of the tables in view that the game does not show.
+local function make_view(wx, wy, wz, dim_x, dim_y, main, lower)
+    local mats = {}
+    local levels = {}
+    local vw = {wx=wx, wy=wy, wz=wz, dim_x=dim_x, dim_y=dim_y, singles=draw_singles, age=0, handles={}, texpos={}, layers={},
+                levels=levels}
+    local handles, place_of = vw.handles, {}
+    local absent = {}       -- depths with tables in view but no layer to draw them in
+    vw.absent = absent
+    STATS.views = STATS.views + 1
+    local visible = dfhack.maps.isTileVisible
+    for depth = 0, LOWER_LEVELS do
+        local at = index[wz - depth]
+        local cells = at and layer(depth, main, lower, dim_x, dim_y)
+        if at then
+            local lv = {depth=depth, n=0, cell={}, tile={}, hidden={}, sx={}, sy={}, x={}, y={}}
+            local xs, ys, keys = at.xs, at.ys, at.keys
+            local base = depth << 40 | 1 << 20 | MARGIN
+            for i = 1, at.n do
+                local x, y = xs[i], ys[i]
+                local sx, sy = x - wx, y - wy
+                if sx >= -1 and sx <= dim_x and sy >= -MARGIN and sy < dim_y + MARGIN then
+                    if sx >= 0 and sx < dim_x and sy >= 0 and sy < dim_y then
+                        if not cells then
+                            if absent[#absent] ~= depth then absent[#absent + 1] = depth end
+                        else
+                            local cell = sx * dim_y + sy
+                            if cells[cell] == 0 then
+                                lv.hidden[#lv.hidden + 1] = cell
+                            else
+                                mats[base + (sx << 20) + sy] = keys[i]
+                                local n = lv.n + 1
+                                lv.n, lv.cell[n], lv.tile[n], lv.sx[n], lv.sy[n], lv.x[n], lv.y[n] =
+                                    n, cell, false, sx, sy, x, y
+                            end
+                        end
+                    elseif visible(x, y, wz - depth) then
+                        -- off the edge there is no cell to tell whether the game shows it
+                        mats[base + (sx << 20) + sy] = keys[i]
+                    end
+                end
+            end
+            if lv.n > 0 or lv.hidden[1] then levels[#levels + 1] = lv end
+        end
     end
-    -- Pass 2: give every noted table with a like neighbour its piece.
-    for i = 1, #list do
-        local b = list[i]
-        local depth = wz - b.z
-        local sx, sy = b.centerx - wx, b.centery - wy
-        local key = mats[spot(depth, sx, sy)]
-        local left = draw_singles ~= 'only' and mats[spot(depth, sx - 1, sy)] == key
-        local right = draw_singles ~= 'only' and mats[spot(depth, sx + 1, sy)] == key
-        if left or right or draw_singles then
-            local cells = layer(depth, main, lower, dim_x, dim_y)
-            local cell = sx * dim_y + sy
-            if cells and cells[cell] ~= 0 then
-                local piece = left and (right and MIDDLE or RIGHT) or right and LEFT or SINGLE
-                local ok, texpos = pcall(tile_texpos, tint_of(key), piece, phase_at(b.centerx, b.centery))
-                if ok and texpos then
-                    cells[cell] = texpos
-                    STATS.cells = STATS.cells + 1
-                elseif not ok and not first_err then
-                    first_err = texpos
+    local join = draw_singles ~= 'only'
+    local calm_of = {}      -- wood: spot -> is a tile of this west-east run part of a deep table?
+    local first_err
+    for _, lv in ipairs(levels) do
+        local depth = lv.depth
+        for i = 1, lv.n do
+            local sx, sy = lv.sx[i], lv.sy[i]
+            local here = spot(depth, sx, sy)
+            local key = mats[here]
+            local left = join and mats[here - (1 << 20)] == key
+            local right = join and mats[here + (1 << 20)] == key
+            local north = join and mats[here - 1] == key
+            local south = join and mats[here + 1] == key
+            if left or right or north or south or draw_singles then
+                local piece = piece_of(left, right)
+                -- at the leg rows a neighbour is joined to only if it is the same there: both
+                -- with a table to the south, or both without.  At the top, a tile that goes on
+                -- to the north is joined to a neighbour only if that one does too.
+                local high = piece_of(left and (not north or mats[here - (1 << 20) - 1] == key),
+                                      right and (not north or mats[here + (1 << 20) - 1] == key))
+                local low = piece_of(left and (mats[here - (1 << 20) + 1] == key) == south,
+                                     right and (mats[here + (1 << 20) + 1] == key) == south)
+                local tint = tint_of(key)
+                local vert, k = nil, 0
+                local calm = false
+                if join and tint & 3 == CLASS_WOOD and not (north or south) then
+                    calm = calm_of[here]
+                    if calm == nil then
+                        -- look along the whole run once, and remember the answer for all of it
+                        local first, last = here, here
+                        while mats[first - (1 << 20)] == key do first = first - (1 << 20) end
+                        while mats[last + (1 << 20)] == key do last = last + (1 << 20) end
+                        calm = false
+                        for s = first, last, 1 << 20 do
+                            if mats[s - 1] == key or mats[s + 1] == key then calm = true; break end
+                        end
+                        for s = first, last, 1 << 20 do calm_of[s] = calm end
+                    end
+                end
+                if north or south or calm or high ~= piece or low ~= piece then
+                    if counts_from_map_top(tint & 3) then
+                        k = lv.y[i]
+                    else
+                        while k < MARGIN and mats[here - k - 1] == key do k = k + 1 end
+                    end
+                    vert = {n=north, s=south, high=high, low=low, k=k % K_WRAP, calm=calm or nil}
+                end
+                local ok, handle = pcall(tile_handle, tint, piece, phase_at(lv.x[i], lv.y[i] - k), vert)
+                if ok and handle then
+                    local place = place_of[handle]
+                    if not place then
+                        place = #handles + 1
+                        handles[place], place_of[handle] = handle, place
+                    end
+                    lv.tile[i] = place
+                else
+                    -- a tile that could not be had is asked for again next frame
+                    vw.age = VIEW_FRAMES
+                    if not ok and not first_err then first_err = handle end
                 end
             end
         end
+        lv.sx, lv.sy, lv.x, lv.y = nil, nil, nil, nil
     end
-    if first_err then error(first_err, 0) end
+    return vw, first_err
+end
+
+-- Put the view's tiles in the map.  False, with nothing written, if the view no longer fits what
+-- the game shows.
+local function put_view(vw, main, lower)
+    local dim_x, dim_y = vw.dim_x, vw.dim_y
+    local levels = vw.levels
+    local layers = vw.layers
+    local absent = vw.absent
+    for i = 1, #absent do
+        if layer(absent[i], main, lower, dim_x, dim_y) then return false end
+    end
+    -- first look, then write: a row must not be half drawn when a table of it has gone from view
+    for l = 1, #levels do
+        local lv = levels[l]
+        local cells = layer(lv.depth, main, lower, dim_x, dim_y)
+        if not cells then return false end
+        layers[l] = cells
+        local hidden = lv.hidden
+        for i = 1, #hidden do
+            if cells[hidden[i]] ~= 0 then return false end
+        end
+        local cell = lv.cell
+        for i = 1, lv.n do
+            if cells[cell[i]] == 0 then return false end
+        end
+    end
+    -- (a handle's texture number is asked for every frame: the game can give it another)
+    local texpos_of = dfhack.textures.getTexposByHandle
+    local handles, texpos = vw.handles, vw.texpos
+    for i = 1, #handles do
+        local t = texpos_of(handles[i])
+        texpos[i] = t and t > 0 and t or false
+    end
+    local drawn = 0
+    for l = 1, #levels do
+        local lv = levels[l]
+        local cells = layers[l]
+        local cell, tile = lv.cell, lv.tile
+        for i = 1, lv.n do
+            local t = tile[i]
+            t = t and texpos[t]
+            if t then
+                cells[cell[i]] = t
+                drawn = drawn + 1
+            end
+        end
+        layers[l] = false      -- (not kept: the game may free a layer)
+    end
+    STATS.cells = STATS.cells + drawn
+    return true
+end
+
+local function draw_tables()
+    if not template then return end
+    if generation ~= GENERATION then
+        index, view, generation = nil, nil, GENERATION
+    end
+    local g = df.global
+    local v = g.world.buildings.other.TABLE
+    local count = #v
+    if count == 0 then
+        index, view = nil, nil
+        return
+    end
+    local next_id = g.building_next_id
+    index_age = index_age + 1
+    local index_err
+    if not index or count ~= index_count or next_id ~= index_next_id or index_age > REINDEX_FRAMES then
+        index_err = make_index(v, count, next_id)
+    else
+        local stale = false
+        for i = 1, #unfinished do
+            local b = v[unfinished[i]]
+            if b:getBuildStage() >= b:getMaxBuildStage() then stale = true; break end
+        end
+        for i = 1, #removing do
+            if stale then break end
+            local b = v[removing[i]]
+            -- called off: it is a table being built now, or whole again
+            if b:getBuildStage() >= b:getMaxBuildStage() or not being_removed(b) then stale = true end
+        end
+        if stale then index_err = make_index(v, count, next_id) end
+    end
+    local gps = g.gps
+    local main, lower = gps.main_viewport, gps.lower_viewport
+    local wx, wy, wz = g.window_x, g.window_y, g.window_z
+    local dim_x, dim_y = main.dim_x, main.dim_y
+    local vw = view
+    if vw and vw.age < VIEW_FRAMES and vw.wx == wx and vw.wy == wy and vw.wz == wz and vw.dim_x == dim_x
+            and vw.dim_y == dim_y and vw.singles == draw_singles then
+        vw.age = vw.age + 1
+        if put_view(vw, main, lower) then return end
+    end
+    local err
+    vw, err = make_view(wx, wy, wz, dim_x, dim_y, main, lower)
+    view = vw
+    -- (right after it is made a view fits, unless a viewport went missing in between)
+    if not put_view(vw, main, lower) then view = nil end
+    err = index_err or err
+    if err then error(err, 0) end
 end
 
 LongTablesOverlay = defclass(LongTablesOverlay, overlay.OverlayWidget)
@@ -381,10 +700,11 @@ if not dfhack_flags.module then
     if args[1] == 'reload' and not args[2] then
         if not load_template() then qerror(NAME .. ': could not read ' .. DATA .. 'template.lua') end
         tile_handles = {}
+        GENERATION = GENERATION + 1
         print(NAME .. ': reloaded ' .. DATA .. 'template.lua')
     elseif args[1] == 'status' and not args[2] then
-        print(('%s: template %s, %d frames, %d table cells drawn, %d tiles painted%s')
-            :format(NAME, template and 'loaded' or 'MISSING', STATS.frames, STATS.cells, STATS.tiles,
+        print(('%s: template %s, %d frames, %d table cells drawn, %d tiles painted, tables read %d times, view worked out %d times%s')
+            :format(NAME, template and 'loaded' or 'MISSING', STATS.frames, STATS.cells, STATS.tiles, STATS.indexes, STATS.views,
                     draw_singles and ', singles ' .. tostring(draw_singles == true and 'on' or draw_singles) or ''))
     elseif args[1] == 'singles' and (args[2] == 'on' or args[2] == 'off' or args[2] == 'only') and not args[3] then
         draw_singles = args[2] == 'only' and 'only' or args[2] == 'on'
